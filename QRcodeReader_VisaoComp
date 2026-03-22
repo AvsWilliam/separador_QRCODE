@@ -1,0 +1,103 @@
+import cv2
+from ultralytics import YOLO
+import time
+
+# =========================
+# CONFIGURAÇÃO CÂMERA (IP)
+# =========================
+# Verifique o IP no app DroidCam do seu celular
+ip_celular = "192.168.1.15"  # <-- SUBSTITUA PELO SEU IP
+porta = "4747"
+url = f"http://{ip_celular}:{porta}/video"
+
+# =========================
+# SETUP MODELOS E CAMERA
+# =========================
+print(f"Conectando ao DroidCam em: {url}")
+cap = cv2.VideoCapture(url)
+
+# Carrega YOLO e Detector de QR Code
+modelo_yolo = YOLO("yolov8n.pt")
+detector_qr = cv2.QRCodeDetector()
+
+# Contadores e Estados
+contador_objetos = 0
+detectando_yolo = False
+ultimo_tempo_yolo = 0
+ultimo_qr_lido = ""
+ultimo_tempo_qr = 0
+
+print("\n--- SISTEMA INICIADO ---")
+print("Detectando Objetos Grandes e QR Codes...")
+
+# =========================
+# LOOP PRINCIPAL
+# =========================
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        print("Erro de conexão com o celular.")
+        break
+
+    # Redimensiona para manter o processamento fluido
+    frame = cv2.resize(frame, (640, 480))
+    tempo_atual = time.time()
+
+    # 1. --- LÓGICA DO QR CODE ---
+    dados_qr, bbox_qr, _ = detector_qr.detectAndDecode(frame)
+    if bbox_qr is not None and dados_qr:
+        # Desenha um retângulo azul para o QR Code
+        pts = bbox_qr.astype(int)
+        for i in range(len(pts[0])):
+            cv2.line(frame, tuple(pts[0][i]), tuple(pts[0][(i+1) % len(pts[0])]), (255, 0, 0), 2)
+        
+        # Evita leituras duplicadas rápidas (delay de 2s)
+        if dados_qr != ultimo_qr_lido or (tempo_atual - ultimo_tempo_qr > 2):
+            print(f"QR Code Lido: {dados_qr}")
+            ultimo_qr_lido = dados_qr
+            ultimo_tempo_qr = tempo_atual
+
+    # 2. --- LÓGICA DO YOLO (OBJETOS) ---
+    resultados = modelo_yolo(frame, verbose=False)
+    objeto_grande_agora = False
+
+    for r in resultados:
+        for box in r.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            area = (x2 - x1) * (y2 - y1)
+            nome_classe = r.names[int(box.cls[0])]
+
+            # Filtro de área (Ex: > 30.000 pixels)
+            if area > 30000:
+                objeto_grande_agora = True
+                # Desenha retângulo verde para objetos
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(frame, f"{nome_classe} GRANDE", (x1, y1 - 10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+    # Lógica de contagem YOLO
+    if objeto_grande_agora:
+        if not detectando_yolo and (tempo_atual - ultimo_tempo_yolo > 2):
+            contador_objetos += 1
+            print(f"Objeto Contado! Total: {contador_objetos}")
+            detectando_yolo = True
+            ultimo_tempo_yolo = tempo_atual
+    else:
+        detectando_yolo = False
+
+    # =========================
+    # INTERFACE (DISPLAY)
+    # =========================
+    # Status no canto da tela
+    cv2.putText(frame, f"Objetos: {contador_objetos}", (20, 40), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    cv2.putText(frame, f"Ultimo QR: {ultimo_qr_lido[:20]}...", (20, 70), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
+    cv2.imshow("PetGuard - Integrado (YOLO + QR)", frame)
+
+    if cv2.waitKey(1) == 27: # ESC para fechar
+        break
+
+cap.release()
+cv2.destroyAllWindows()
