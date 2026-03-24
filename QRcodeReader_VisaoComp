@@ -78,9 +78,6 @@ print("Detectando Objetos Grandes e QR Codes...")
 # =========================
 # LOOP PRINCIPAL
 # =========================
-# =========================
-# LOOP PRINCIPAL
-# =========================
 while True:
     # Captura das DUAS câmeras
     ret1, frame1 = cap.read()
@@ -143,5 +140,5 @@ while True:
         break
 
 cap.release()
-cap2.release() # Não esqueça de liberar a segunda camera!
+cap2.release()
 cv2.destroyAllWindows()
