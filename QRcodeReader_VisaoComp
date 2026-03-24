@@ -33,17 +33,33 @@ import time
 # =========================
 # CONFIGURAÇÃO CÂMERA (IP)
 # =========================
+def ip_config_celular ():
+    print("CONFIGURAÇÃO DE IP PARA CÂMERA DO CELULAR")
+    if(1):
+        print("CONFIGURAÇÃO PARA CÂMERA 1")
+        ip_1 = input("Digite o IP da sua camera QR Code (DroidCam): ")
+        porta_1 = input("Digite a porta da sua camera QR Code (DroidCam): ")
+    if(2):
+        print("CONFIGURAÇÃO PARA CÂMERA 2")
+        ip_2 = input("Digite o IP da sua camera QR Code (DroidCam): ")
+        porta_2 = input("Digite a porta da sua camera QR Code (DroidCam): ")
+    return ip_1, ip_2, porta_1, porta_2
 
 # Verifique o IP no app DroidCam do seu celular
-ip_celular = "192.168.15.116"  # <-- SUBSTITUA PELO SEU IP
-porta = "4747"
-url = f"http://{ip_celular}:{porta}/video"
+ip_celular_1, ip_celular_2, porta_1, porta_2 = ip_config_celular()
+
+
+
+url_1 = f"http://{ip_celular_1}:{porta_1}/video"
+url_2 = f"http://{ip_celular_2}:{porta_2}/video"
 
 # =========================
 # SETUP MODELOS E CAMERA
 # =========================
-print(f"Conectando ao DroidCam em: {url}")
-cap = cv2.VideoCapture(url)
+print(f"Conectando ao DroidCam em: {url_1}")
+cap = cv2.VideoCapture(url_1)
+print(f"Conectando ao DroidCam em: {url_2}")
+cap2 = cv2.VideoCapture(url_2)
 
 # Carrega YOLO e Detector de QR Code
 modelo_yolo = YOLO("yolov8n.pt")
@@ -62,71 +78,70 @@ print("Detectando Objetos Grandes e QR Codes...")
 # =========================
 # LOOP PRINCIPAL
 # =========================
+# =========================
+# LOOP PRINCIPAL
+# =========================
 while True:
-    ret, frame = cap.read()
-    if not ret:
-        print("Erro de conexão com o celular.")
+    # Captura das DUAS câmeras
+    ret1, frame1 = cap.read()
+    ret2, frame2 = cap2.read()
+
+    if not ret1 or not ret2:
+        print("Erro de conexão com uma das câmeras.")
         break
 
-    # Redimensiona para manter o processamento fluido
-    frame = cv2.resize(frame, (640, 480))
+    # Processar cada frame em uma lista para facilitar
+    frames = [frame1, frame2]
+    cameras_nomes = ["Camera 1", "Camera 2"]
+    
     tempo_atual = time.time()
 
-    # 1. --- LÓGICA DO QR CODE ---
-    dados_qr, bbox_qr, _ = detector_qr.detectAndDecode(frame)
-    if bbox_qr is not None and dados_qr:
-        # Desenha um retângulo azul para o QR Code
-        pts = bbox_qr.astype(int)
-        for i in range(len(pts[0])):
-            cv2.line(frame, tuple(pts[0][i]), tuple(pts[0][(i+1) % len(pts[0])]), (255, 0, 0), 2)
-        
-        # Evita leituras duplicadas rápidas (delay de 2s)
-        if dados_qr != ultimo_qr_lido or (tempo_atual - ultimo_tempo_qr > 2):
-            print(f"QR Code Lido: {dados_qr}")
-            ultimo_qr_lido = dados_qr
-            ultimo_tempo_qr = tempo_atual
+    for i, frame in enumerate(frames):
+        # 1. Redimensiona para fluidez
+        frame = cv2.resize(frame, (640, 480))
 
-    # 2. --- LÓGICA DO YOLO (OBJETOS) ---
-    resultados = modelo_yolo(frame, verbose=False)
-    objeto_grande_agora = False
+        # --- LÓGICA DO QR CODE ---
+        dados_qr, bbox_qr, _ = detector_qr.detectAndDecode(frame)
+        if bbox_qr is not None and dados_qr:
+            # Desenha o QR Code
+            pts = bbox_qr.astype(int)
+            cv2.polylines(frame, [pts], True, (255, 0, 0), 2)
+            
+            if dados_qr != ultimo_qr_lido or (tempo_atual - ultimo_tempo_qr > 2):
+                print(f"[{cameras_nomes[i]}] QR Code: {dados_qr}")
+                ultimo_qr_lido = dados_qr
+                ultimo_tempo_qr = tempo_atual
 
-    for r in resultados:
-        for box in r.boxes:
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            area = (x2 - x1) * (y2 - y1)
-            nome_classe = r.names[int(box.cls[0])]
+        # --- LÓGICA DO YOLO ---
+        resultados = modelo_yolo(frame, verbose=False)
+        objeto_grande_agora = False
 
-            # Filtro de área (Ex: > 30.000 pixels)
-            if area > 30000:
-                objeto_grande_agora = True
-                # Desenha retângulo verde para objetos
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame, f"{nome_classe} GRANDE", (x1, y1 - 10), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        for r in resultados:
+            for box in r.boxes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                area = (x2 - x1) * (y2 - y1)
+                if area > 30000:
+                    objeto_grande_agora = True
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-    # Lógica de contagem YOLO
-    if objeto_grande_agora:
-        if not detectando_yolo and (tempo_atual - ultimo_tempo_yolo > 2):
-            contador_objetos += 1
-            print(f"Objeto Contado! Total: {contador_objetos}")
-            detectando_yolo = True
-            ultimo_tempo_yolo = tempo_atual
-    else:
-        detectando_yolo = False
+        # Lógica de contagem (Simplificada para o exemplo)
+        if objeto_grande_agora and not detectando_yolo:
+             contador_objetos += 1
+             print(f"Objeto detectado na {cameras_nomes[i]}! Total: {contador_objetos}")
+             detectando_yolo = True
+        elif not objeto_grande_agora:
+             detectando_yolo = False
 
-    # =========================
-    # INTERFACE (DISPLAY)
-    # =========================
-    # Status no canto da tela
-    cv2.putText(frame, f"Objetos: {contador_objetos}", (20, 40), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    cv2.putText(frame, f"Ultimo QR: {ultimo_qr_lido[:20]}...", (20, 70), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+        # Status na tela de cada frame
+        cv2.putText(frame, f"{cameras_nomes[i]} - Objetos: {contador_objetos}", (20, 40), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-    cv2.imshow("PetGuard - Integrado (YOLO + QR)", frame)
+        # Mostra as janelas separadas
+        cv2.imshow(cameras_nomes[i], frame)
 
     if cv2.waitKey(1) == 27: # ESC para fechar
         break
 
 cap.release()
+cap2.release() # Não esqueça de liberar a segunda camera!
 cv2.destroyAllWindows()
