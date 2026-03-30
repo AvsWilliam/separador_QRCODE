@@ -1,21 +1,20 @@
+import subprocess
+import sys
+import time
 
 # =========================
 # Função para instalar bibliotecas necessárias
 # =========================
-import subprocess
-import sys
-
 def instalar(package):
-    # O check_call lança erro se a instalação falhar
     subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
-# MAPEAMENTO: "nome_no_import": "nome_no_pip"
 libraries = {
     "cv2": "opencv-python",
     "numpy": "numpy",
     "pandas": "pandas",
     "ultralytics": "ultralytics",
-    "time": "time"
+    "lapx" : "lapx",
+    "threading": "threading"
 }
 
 for import_name, install_name in libraries.items():
@@ -27,116 +26,132 @@ for import_name, install_name in libraries.items():
 
 import cv2
 from ultralytics import YOLO
-import time
-
+import threading
 
 # =========================
 # CONFIGURAÇÃO CÂMERA (IP)
 # =========================
 def ip_config_celular ():
     print("CONFIGURAÇÃO DE IP PARA CÂMERA DO CELULAR")
-    if(1):
-        print("CONFIGURAÇÃO PARA CÂMERA 1")
-        ip_1 = input("Digite o IP da sua camera QR Code (DroidCam): ")
-        porta_1 = input("Digite a porta da sua camera QR Code (DroidCam): ")
-    if(2):
-        print("CONFIGURAÇÃO PARA CÂMERA 2")
-        ip_2 = input("Digite o IP da sua camera QR Code (DroidCam): ")
-        porta_2 = input("Digite a porta da sua camera QR Code (DroidCam): ")
+    ip_1 = input("Digite o IP da Câmera 1 (DroidCam): ")
+    porta_1 = input("Digite a porta da Câmera 1 (DroidCam): ")
+    ip_2 = input("Digite o IP da Câmera 2 (DroidCam): ")
+    porta_2 = input("Digite a porta da Câmera 2 (DroidCam): ")
     return ip_1, ip_2, porta_1, porta_2
 
-# Verifique o IP no app DroidCam do seu celular
 ip_celular_1, ip_celular_2, porta_1, porta_2 = ip_config_celular()
-
-
 
 url_1 = f"http://{ip_celular_1}:{porta_1}/video"
 url_2 = f"http://{ip_celular_2}:{porta_2}/video"
 
+
+# ==========================================
+# DEFINIÇÕES DE BUFFER PARA DELAY (THREADING)
+# ==========================================
+class VideoStream:
+    def __init__(self, src):
+        self.cap = cv2.VideoCapture(src)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.ret, self.frame = self.cap.read()
+        self.stopped = False
+
+    def start(self):
+        threading.Thread(target=self.update, args=(), daemon=True).start()
+        return self
+
+    def update(self):
+        while not self.stopped:
+            ret, frame = self.cap.read()
+            if ret:
+                self.ret, self.frame = ret, frame
+
+    def read(self):
+        return self.ret, self.frame
+
+    def release(self):
+        self.stopped = True
+        self.cap.release()
+
 # =========================
 # SETUP MODELOS E CAMERA
 # =========================
-print(f"Conectando ao DroidCam em: {url_1}")
-cap = cv2.VideoCapture(url_1)
-print(f"Conectando ao DroidCam em: {url_2}")
-cap2 = cv2.VideoCapture(url_2)
+try:
+    cap = cv2.VideoCapture(url_1)
+    cap2 = cv2.VideoCapture(url_2)
+except Exception as e:
+    print(f"Erro ao conectar: {e}")
+    sys.exit(1)
 
-# Carrega YOLO e Detector de QR Code
+# Carrega YOLO (Modelo de detecção com rastreamento)
 modelo_yolo = YOLO("yolov8n.pt")
 detector_qr = cv2.QRCodeDetector()
 
-# Contadores e Estados
+# --- VARIÁVEIS DE CONTROLE DE RASTREAMENTO ---
 contador_objetos = 0
-detectando_yolo = False
-ultimo_tempo_yolo = 0
+ids_ja_contados = set() # Guarda os IDs que a IA já processou
 ultimo_qr_lido = ""
 ultimo_tempo_qr = 0
 
-print("\n--- SISTEMA INICIADO ---")
-print("Detectando Objetos Grandes e QR Codes...")
+print("\n--- SISTEMA INICIADO COM RASTREAMENTO (TRACKING) ---")
 
 # =========================
 # LOOP PRINCIPAL
 # =========================
 while True:
-    # Captura das DUAS câmeras
     ret1, frame1 = cap.read()
     ret2, frame2 = cap2.read()
 
     if not ret1 or not ret2:
-        print("Erro de conexão com uma das câmeras.")
+        print("Erro de conexão.")
         break
 
-    # Processar cada frame em uma lista para facilitar
     frames = [frame1, frame2]
     cameras_nomes = ["Camera 1", "Camera 2"]
-    
     tempo_atual = time.time()
 
     for i, frame in enumerate(frames):
-        # 1. Redimensiona para fluidez
         frame = cv2.resize(frame, (640, 480))
 
         # --- LÓGICA DO QR CODE ---
         dados_qr, bbox_qr, _ = detector_qr.detectAndDecode(frame)
         if bbox_qr is not None and dados_qr:
-            # Desenha o QR Code
             pts = bbox_qr.astype(int)
             cv2.polylines(frame, [pts], True, (255, 0, 0), 2)
-            
-            if dados_qr != ultimo_qr_lido or (tempo_atual - ultimo_tempo_qr > 2):
-                print(f"[{cameras_nomes[i]}] QR Code: {dados_qr}")
+            if dados_qr != ultimo_qr_lido or (tempo_atual - ultimo_tempo_qr > 3):
+                print(f"[{cameras_nomes[i]}] QR Lido: {dados_qr}")
                 ultimo_qr_lido = dados_qr
                 ultimo_tempo_qr = tempo_atual
 
-        # --- LÓGICA DO YOLO ---
-        resultados = modelo_yolo(frame, verbose=False)
-        objeto_grande_agora = False
+        # --- LÓGICA DO YOLO COM TRACKING ---
+        # persist=True mantém o ID mesmo que o objeto suma por alguns frames
+        resultados = modelo_yolo.track(frame, persist=True, verbose=False, conf=0.5, iou=0.5)
 
-        for r in resultados:
-            for box in r.boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
+        if resultados[0].boxes.id is not None:
+            # Pegamos os IDs e as coordenadas das caixas
+            boxes = resultados[0].boxes.xyxy.cpu().numpy().astype(int)
+            ids = resultados[0].boxes.id.cpu().numpy().astype(int)
+
+            for box, obj_id in zip(boxes, ids):
+                x1, y1, x2, y2 = box
                 area = (x2 - x1) * (y2 - y1)
-                if area > 30000:
-                    objeto_grande_agora = True
+
+                # Se for um objeto grande e o ID ainda não foi contado
+                if area > 50000:
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.putText(frame, f"ID: {obj_id}", (x1, y1 - 10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-        # Lógica de contagem (Simplificada para o exemplo)
-        if objeto_grande_agora and not detectando_yolo:
-             contador_objetos += 1
-             print(f"Objeto detectado na {cameras_nomes[i]}! Total: {contador_objetos}")
-             detectando_yolo = True
-        elif not objeto_grande_agora:
-             detectando_yolo = False
+                    if obj_id not in ids_ja_contados:
+                        contador_objetos += 1
+                        ids_ja_contados.add(obj_id)
+                        print(f"Novo Objeto Detectado! ID: {obj_id} | Total: {contador_objetos}")
 
-        # Status na tela de cada frame
-        cv2.putText(frame, f"{cameras_nomes[i]} - Objetos: {contador_objetos}", (20, 40), 
+        # Interface
+        cv2.putText(frame, f"Total Pecas: {contador_objetos}", (20, 40), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-        # Mostra as janelas separadas
         cv2.imshow(cameras_nomes[i], frame)
 
-    if cv2.waitKey(1) == 27: # ESC para fechar
+    if cv2.waitKey(1) == 27:
         break
 
 cap.release()
